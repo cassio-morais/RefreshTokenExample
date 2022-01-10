@@ -45,23 +45,16 @@ namespace Api.Controllers
             if (!userCreationResult.Succeeded)
                 return BadRequest(new { Errors = userCreationResult.Errors });
 
+
             var token = GenerateJwtToken(userCredentials);
 
-            var refreshToken = await GenerateRefreshToken(token);
+            var refreshToken = await GenerateRefreshToken(userCredentials.Email);
 
             return Ok(new
             {
                 token,
                 refreshToken
             });
-
-        }
-
-        private async Task<string> GenerateRefreshToken(string jwtToken)
-        {
-            var key = Guid.NewGuid().ToString();
-            await _distributedCache.SetStringAsync(key, jwtToken);
-            return key;
         }
 
         [HttpPost("login")]
@@ -74,7 +67,7 @@ namespace Api.Controllers
 
             var token = GenerateJwtToken(userCredentials);
 
-            var refreshToken = await GenerateRefreshToken(token);
+            var refreshToken = await GenerateRefreshToken(userCredentials.Email);
 
             return Ok(new
             {
@@ -88,6 +81,17 @@ namespace Api.Controllers
         public IActionResult AuthorizedArea()
         {
             return Ok(new { message = "Welcome to authorized area" });
+        }
+
+        private async Task<string> GenerateRefreshToken(string key)
+        {
+            var refreshToken = Guid.NewGuid().ToString();
+            await _distributedCache.SetStringAsync(key, refreshToken, new DistributedCacheEntryOptions
+            {
+                AbsoluteExpiration = DateTimeOffset.Now.AddHours(1),
+            });
+
+            return refreshToken;
         }
 
         private string GenerateJwtToken(UserCredentials userCredentials)
