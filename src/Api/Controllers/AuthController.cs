@@ -1,13 +1,18 @@
 ﻿using IdentityUser.Dtos;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.IdentityModel.Tokens;
 using System.ComponentModel.DataAnnotations;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
 
-namespace IdentityUser.Controllers
+namespace Api.Controllers
 {
     [ApiController]
-    [Route("v1/[controller]")]
+    [Route("v1/auth")]
     public class AuthController : ControllerBase
     {
         private readonly UserManager<Microsoft.AspNetCore.Identity.IdentityUser> _userManager;
@@ -17,7 +22,7 @@ namespace IdentityUser.Controllers
         private readonly IDistributedCache _distributedCache;
 
         public AuthController(UserManager<Microsoft.AspNetCore.Identity.IdentityUser> userManager,
-            SignInManager<Microsoft.AspNetCore.Identity.IdentityUser> signInManager, 
+            SignInManager<Microsoft.AspNetCore.Identity.IdentityUser> signInManager,
             IDistributedCache distributedCache)
         {
             _userManager = userManager;
@@ -40,11 +45,23 @@ namespace IdentityUser.Controllers
             if (!userCreationResult.Succeeded)
                 return BadRequest(new { Errors = userCreationResult.Errors });
 
-            await _distributedCache.SetStringAsync(Guid.NewGuid().ToString(), "some value");
+            var token = GenerateJwtToken(userCredentials);
 
-            await _signInManager.SignInAsync(newUser, false);
+            var refreshToken = await GenerateRefreshToken(token);
 
-            return Ok();
+            return Ok(new
+            {
+                token,
+                refreshToken
+            });
+
+        }
+
+        private async Task<string> GenerateRefreshToken(string jwtToken)
+        {
+            var key = Guid.NewGuid().ToString();
+            await _distributedCache.SetStringAsync(key, jwtToken);
+            return key;
         }
 
         [HttpPost("login")]
@@ -53,9 +70,48 @@ namespace IdentityUser.Controllers
             var user = await _signInManager.PasswordSignInAsync(userCredentials.Email, userCredentials.Password, false, false);
 
             if (!user.Succeeded)
-                return BadRequest();
+                return Unauthorized();
 
-            return Ok();
+            var token = GenerateJwtToken(userCredentials);
+
+            var refreshToken = await GenerateRefreshToken(token);
+
+            return Ok(new
+            {
+                token,
+                refreshToken
+            });
+        }
+
+        [Authorize]
+        [HttpGet("authorized-area")]
+        public IActionResult AuthorizedArea()
+        {
+            return Ok(new { message = "Welcome to authorized area" });
+        }
+
+        private string GenerateJwtToken(UserCredentials userCredentials)
+        {
+            var tokenHandler = new JwtSecurityTokenHandler();
+
+            var symmetricSecurityKey = new SymmetricSecurityKey(Encoding.ASCII.GetBytes("#GREATSUPERSECRET#"));
+
+            var tokenDescriptor = new SecurityTokenDescriptor
+            {
+                Subject = new ClaimsIdentity(
+                new Claim[]
+                {
+                    new Claim(ClaimTypes.Name, userCredentials.Email),
+                }),
+                Expires = DateTime.UtcNow.AddHours(1),
+                SigningCredentials = new SigningCredentials(symmetricSecurityKey, SecurityAlgorithms.HmacSha256Signature)
+            };
+
+            var securityJwtToken = tokenHandler.CreateToken(tokenDescriptor);
+
+            var jwtToken = tokenHandler.WriteToken(securityJwtToken);
+
+            return jwtToken;
         }
     }
 }
