@@ -16,22 +16,23 @@ namespace Api.Controllers
     public class AuthController : ControllerBase
     {
         private readonly UserManager<Microsoft.AspNetCore.Identity.IdentityUser> _userManager;
-
         private readonly SignInManager<Microsoft.AspNetCore.Identity.IdentityUser> _signInManager;
-
+        private readonly IHttpContextAccessor _httpContextAccessor;
         private readonly IDistributedCache _distributedCache;
 
         public AuthController(UserManager<Microsoft.AspNetCore.Identity.IdentityUser> userManager,
             SignInManager<Microsoft.AspNetCore.Identity.IdentityUser> signInManager,
-            IDistributedCache distributedCache)
+            IDistributedCache distributedCache, 
+            IHttpContextAccessor httpContextAccessor)
         {
             _userManager = userManager;
             _signInManager = signInManager;
             _distributedCache = distributedCache;
+            _httpContextAccessor = httpContextAccessor;
         }
 
         [HttpPost("register")]
-        public async Task<IActionResult> Register([FromBody][Required] UserCredentials userCredentials)
+        public async Task<IActionResult> RegisterAsync([FromBody][Required] UserCredentials userCredentials)
         {
             var newUser = new Microsoft.AspNetCore.Identity.IdentityUser()
             {
@@ -46,9 +47,9 @@ namespace Api.Controllers
                 return BadRequest(new { Errors = userCreationResult.Errors });
 
 
-            var token = GenerateJwtToken(userCredentials);
+            var token = GenerateJwtToken(userCredentials.Email);
 
-            var refreshToken = await GenerateRefreshToken(userCredentials.Email);
+            var refreshToken = await GenerateRefreshTokenAsync(userCredentials.Email);
 
             return Ok(new
             {
@@ -58,16 +59,18 @@ namespace Api.Controllers
         }
 
         [HttpPost("login")]
-        public async Task<IActionResult> Login([FromBody][Required] UserCredentials userCredentials)
+        public async Task<IActionResult> LoginAsync([FromBody][Required] UserCredentials userCredentials)
         {
             var user = await _signInManager.PasswordSignInAsync(userCredentials.Email, userCredentials.Password, false, false);
 
             if (!user.Succeeded)
                 return Unauthorized();
 
-            var token = GenerateJwtToken(userCredentials);
+            await _distributedCache.RemoveAsync(userCredentials.Email);
 
-            var refreshToken = await GenerateRefreshToken(userCredentials.Email);
+            var token = GenerateJwtToken(userCredentials.Email);
+
+            var refreshToken = await GenerateRefreshTokenAsync(userCredentials.Email);
 
             return Ok(new
             {
@@ -83,18 +86,48 @@ namespace Api.Controllers
             return Ok(new { message = "Welcome to authorized area" });
         }
 
-        private async Task<string> GenerateRefreshToken(string key)
+        [Authorize]
+        [HttpPost("refresh/{refreshtoken}")]
+        public async Task<IActionResult> GetRefreshTokenAsync([FromRoute] string refreshtoken)
+        {
+            var username =_httpContextAccessor.HttpContext?.User.FindFirst(ClaimTypes.Name)?.Value;
+
+            var refreshTokenCache = _distributedCache.GetString(username);
+
+            if(refreshtoken != refreshTokenCache)
+                return BadRequest();          
+           
+            var user = await _userManager.FindByEmailAsync(username);
+
+            if(user is null)
+                return BadRequest();
+
+            await _distributedCache.RemoveAsync(username);
+
+            var newToken = GenerateJwtToken(username);
+
+            var newRefreshToken = await GenerateRefreshTokenAsync(username);
+
+            return Ok(new
+            {
+                newToken,
+                newRefreshToken
+            });
+        }
+
+        private async Task<string> GenerateRefreshTokenAsync(string key)
         {
             var refreshToken = Guid.NewGuid().ToString();
             await _distributedCache.SetStringAsync(key, refreshToken, new DistributedCacheEntryOptions
             {
                 AbsoluteExpiration = DateTimeOffset.Now.AddHours(1),
+                
             });
 
             return refreshToken;
         }
 
-        private string GenerateJwtToken(UserCredentials userCredentials)
+        private string GenerateJwtToken(string username)
         {
             var tokenHandler = new JwtSecurityTokenHandler();
 
@@ -105,7 +138,7 @@ namespace Api.Controllers
                 Subject = new ClaimsIdentity(
                 new Claim[]
                 {
-                    new Claim(ClaimTypes.Name, userCredentials.Email),
+                    new Claim(ClaimTypes.Name, username),
                 }),
                 Expires = DateTime.UtcNow.AddHours(1),
                 SigningCredentials = new SigningCredentials(symmetricSecurityKey, SecurityAlgorithms.HmacSha256Signature)
