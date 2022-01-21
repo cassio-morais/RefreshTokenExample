@@ -6,7 +6,7 @@ namespace Api.DependencyInjection
         {
              return services.AddStackExchangeRedisCache(options =>
                     {
-                        options.Configuration = "localhost:6379";
+                        options.Configuration = "redis:6379";
                     });
         }
     }
